@@ -1,17 +1,18 @@
 """
 EventGenie AI - Budget Calculation Service
-All arithmetic is done in Python, not delegated to the AI.
+All arithmetic is executed deterministically in Python rather than delegated to AI,
+guaranteeing financial calculation accuracy.
 """
-from typing import Any
+from typing import Any, Dict, List
 
 
-def calculate_budget_totals(budget_items: list[dict]) -> dict[str, Any]:
+def calculate_budget_totals(budget_items: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Calculate budget totals from a list of budget item dicts.
-    Returns summary dict with totals, remaining, and overrun flag.
+    Returns summary dict with totals, remaining, and count.
     """
-    total_allocated = sum(float(item.get('amount', 0)) for item in budget_items)
-    total_estimated = sum(float(item.get('estimated_amount', 0)) for item in budget_items)
+    total_allocated = sum(float(item.get('amount', 0) or 0) for item in budget_items)
+    total_estimated = sum(float(item.get('estimated_amount', 0) or 0) for item in budget_items)
 
     return {
         'total_allocated': round(total_allocated, 2),
@@ -20,54 +21,59 @@ def calculate_budget_totals(budget_items: list[dict]) -> dict[str, Any]:
     }
 
 
-def recalculate_percentages(budget_items: list[dict], total_budget: float) -> list[dict]:
+def recalculate_percentages(budget_items: List[Dict[str, Any]], total_budget: float) -> List[Dict[str, Any]]:
     """
     Recalculate percentage share of each item against the total budget.
     Mutates and returns the list.
     """
     if total_budget <= 0:
+        for item in budget_items:
+            item['percentage'] = 0.0
         return budget_items
+
     for item in budget_items:
-        amount = float(item.get('amount', 0))
+        amount = float(item.get('amount', 0) or 0)
         item['percentage'] = round((amount / total_budget) * 100, 2)
     return budget_items
 
 
-def check_budget_overrun(budget_items: list[dict], total_budget: float) -> dict[str, Any]:
+def check_budget_overrun(budget_items: List[Dict[str, Any]], total_budget: float) -> Dict[str, Any]:
     """
     Check whether total allocations exceed the stated budget.
-    Returns overrun details.
+    Returns overrun details, utilization, and remaining budget.
     """
     totals = calculate_budget_totals(budget_items)
     total_allocated = totals['total_allocated']
     remaining = round(total_budget - total_allocated, 2)
     is_overrun = remaining < 0
 
+    utilization_pct = round((total_allocated / total_budget * 100), 1) if total_budget > 0 else 0.0
+
     return {
         'total_budget': round(total_budget, 2),
         'total_allocated': total_allocated,
         'remaining': remaining,
         'is_overrun': is_overrun,
-        'overrun_amount': round(abs(remaining), 2) if is_overrun else 0,
-        'utilization_percent': round((total_allocated / total_budget * 100), 1) if total_budget > 0 else 0,
+        'overrun_amount': round(abs(remaining), 2) if is_overrun else 0.0,
+        'utilization_percent': utilization_pct,
     }
 
 
-def apply_contingency(budget_items: list[dict], total_budget: float, contingency_pct: float = 5.0) -> float:
+def apply_contingency(budget_items: List[Dict[str, Any]], total_budget: float, contingency_pct: float = 5.0) -> float:
     """
     Calculate a contingency reserve amount.
-    Returns the contingency amount (not added to items; caller manages this).
+    Returns the contingency amount clamped between 0 and 50 percent.
     """
-    contingency_pct = max(0.0, min(contingency_pct, 50.0))  # clamp 0-50%
-    return round(total_budget * contingency_pct / 100, 2)
+    clamped_pct = max(0.0, min(float(contingency_pct), 50.0))
+    return round(float(total_budget) * clamped_pct / 100.0, 2)
 
 
-def parse_ai_budget_items(budget_breakdown: list[dict], total_budget: float) -> list[dict]:
+def parse_ai_budget_items(budget_breakdown: List[Dict[str, Any]], total_budget: float) -> List[Dict[str, Any]]:
     """
     Parse and validate AI-generated budget items.
-    Ensures amounts sum correctly against the total budget.
+    Ensures categories exist and amounts scale accurately against the total budget.
     """
-    validated = []
+    validated: List[Dict[str, Any]] = []
     for item in budget_breakdown:
         if not isinstance(item, dict):
             continue
@@ -89,7 +95,7 @@ def parse_ai_budget_items(budget_breakdown: list[dict], total_budget: float) -> 
             'amount': estimated_amount,  # Start with estimate as actual
             'percentage': percentage,
             'notes': str(item.get('notes', '')),
-            'is_confirmed': False,  # All AI amounts are estimates
+            'is_confirmed': False,  # All AI amounts are estimates until verified
         })
 
     # Correct total if AI math is off
@@ -104,12 +110,13 @@ def parse_ai_budget_items(budget_breakdown: list[dict], total_budget: float) -> 
 
         # Recalculate percentages after scaling
         for v in validated:
-            v['percentage'] = round(v['amount'] / total_budget * 100, 2) if total_budget > 0 else 0
+            v['percentage'] = round(v['amount'] / total_budget * 100, 2) if total_budget > 0 else 0.0
 
     return validated
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert value to float without raising exceptions."""
     try:
         return float(value)
     except (TypeError, ValueError):

@@ -330,3 +330,122 @@ def test_chat_empty_message(client):
     event_id = create.get_json()['data']['id']
     resp = client.post(f'/api/events/{event_id}/chat', json={'message': ''})
     assert resp.status_code == 400
+
+
+# ─── Security & Sanitization Tests ───────────────────────────────────────────
+
+def test_security_headers_present(client):
+    """Verify all critical OWASP security headers are present in responses."""
+    resp = client.get('/api/health')
+    assert resp.status_code == 200
+    headers = resp.headers
+    assert 'Content-Security-Policy' in headers
+    assert headers.get('X-Content-Type-Options') == 'nosniff'
+    assert headers.get('X-Frame-Options') == 'DENY'
+    assert headers.get('X-XSS-Protection') == '1; mode=block'
+    assert headers.get('Referrer-Policy') == 'strict-origin-when-cross-origin'
+    assert 'Permissions-Policy' in headers
+
+
+def test_input_sanitization_xss(client):
+    """Verify HTML/script tags are stripped from user inputs to prevent stored XSS."""
+    payload = {
+        'name': '<script>alert("XSS")</script>Safe Wedding',
+        'event_type': 'wedding',
+        'location': '<b>Mumbai</b> Palace',
+        'theme': '<img src=x onerror=alert(1)>Royal',
+        'preferences': '<a href="javascript:alert(1)">No non-veg</a>',
+    }
+    resp = client.post('/api/events', json=payload)
+    assert resp.status_code == 201
+    data = resp.get_json()['data']
+    assert '<script>' not in data['name']
+    assert 'Safe Wedding' in data['name']
+    assert '<b>' not in data['location']
+    assert '<img' not in data['theme']
+    assert '<a ' not in data['preferences']
+
+
+def test_export_event_plan(client):
+    """Verify the /export endpoint returns complete structured JSON."""
+    create = client.post('/api/events', json={'name': 'Exportable Gala', 'event_type': 'community', 'budget': 100000})
+    event_id = create.get_json()['data']['id']
+
+    # Add a task
+    client.post(f'/api/events/{event_id}/tasks', json={'title': 'Setup stage'})
+
+    resp = client.get(f'/api/events/{event_id}/export')
+    assert resp.status_code == 200
+    data = resp.get_json()['data']
+    assert 'event' in data
+    assert 'plans' in data
+    assert 'budget' in data
+    assert 'tasks' in data
+    assert len(data['tasks']) == 1
+    assert data['tasks'][0]['title'] == 'Setup stage'
+    assert 'exported_at' in data
+
+
+def test_delete_single_budget_item(client):
+    """Verify deleting a specific budget line item."""
+    create = client.post('/api/events', json={'name': 'Budget Event', 'event_type': 'birthday', 'budget': 50000})
+    event_id = create.get_json()['data']['id']
+
+    # Add item
+    update = client.put(f'/api/events/{event_id}/budget', json={'items': [{'category': 'Cake', 'amount': 3000}]})
+    assert update.status_code == 200
+    item_id = update.get_json()['data']['items'][0]['id']
+
+    # Delete item
+    del_resp = client.delete(f'/api/events/{event_id}/budget/{item_id}')
+    assert del_resp.status_code == 200
+    assert len(del_resp.get_json()['data']['items']) == 0
+
+
+def test_budget_service_contingency_and_percentages():
+    """Unit test contingency and percentage recalculations."""
+    from services.budget_service import apply_contingency, recalculate_percentages
+
+    contingency = apply_contingency([], 100000, 10.0)
+    assert contingency == 10000.0
+
+    items = [
+        {'amount': 25000},
+        {'amount': 75000},
+    ]
+    recalculated = recalculate_percentages(items, 100000)
+    assert recalculated[0]['percentage'] == 25.0
+    assert recalculated[1]['percentage'] == 75.0
+
+
+def test_task_overdue_computation(client):
+    """Verify task is_overdue computation for past due dates."""
+    create = client.post('/api/events', json={'name': 'Overdue Event', 'event_type': 'custom'})
+    event_id = create.get_json()['data']['id']
+
+    task_resp = client.post(f'/api/events/{event_id}/tasks', json={
+        'title': 'Past task',
+        'due_date': '2020-01-01',
+    })
+    assert task_resp.status_code == 201
+    assert task_resp.get_json()['data']['is_overdue'] is True
+
+
+def test_cascade_delete_event(client):
+    """Verify deleting an event deletes associated tasks and budget items."""
+    create = client.post('/api/events', json={'name': 'Cascade Event', 'event_type': 'college', 'budget': 20000})
+    event_id = create.get_json()['data']['id']
+
+    # Add task & budget
+    client.post(f'/api/events/{event_id}/tasks', json={'title': 'Poster design'})
+    client.put(f'/api/events/{event_id}/budget', json={'items': [{'category': 'Print', 'amount': 2000}]})
+
+    # Delete event
+    del_resp = client.delete(f'/api/events/{event_id}')
+    assert del_resp.status_code == 200
+
+    # Ensure getting event 404s
+    assert client.get(f'/api/events/{event_id}').status_code == 404
+    assert client.get(f'/api/events/{event_id}/tasks').status_code == 404
+    assert client.get(f'/api/events/{event_id}/budget').status_code == 404
+

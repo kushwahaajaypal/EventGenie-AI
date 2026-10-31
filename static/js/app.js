@@ -1,3 +1,4 @@
+'use strict';
 /**
  * EventGenie AI - Main Application
  * All API calls go through the Flask backend.
@@ -354,6 +355,14 @@ function renderEventDetail(event) {
           <button class="btn btn-secondary w-full" onclick="navigateTo('tasks')">
             ${icon('check-square')} Manage Tasks
           </button>
+          <div class="flex gap-8 mt-8">
+            <button class="btn btn-secondary flex-1 btn-sm" onclick="printEventPlan()" aria-label="Print event plan">
+              ${icon('sparkles')} Print Plan
+            </button>
+            <button class="btn btn-secondary flex-1 btn-sm" onclick="exportEventPlan(${event.id})" aria-label="Export event plan as JSON">
+              ${icon('arrow-right')} Export JSON
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -376,17 +385,38 @@ function renderEventDetail(event) {
   `;
 }
 
+function printEventPlan() {
+  window.print();
+}
+
+async function exportEventPlan(eventId) {
+  try {
+    const res = await apiFetch(`/events/${eventId}/export`);
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(res.data, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    const safeName = (state.currentEvent?.name || 'event').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    downloadAnchor.setAttribute("download", `${safeName}_plan.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    showToast('Event plan exported as JSON!');
+  } catch (e) {
+    showToast('Failed to export: ' + e.message, 'error');
+  }
+}
+
 function renderPlanOverview(planSections) {
   const overview = planSections['overview']?.content;
   const ideas = planSections['ideas']?.content;
 
   return `
-    <div class="tab-nav" id="planTabNav">
-      <button class="tab-btn active" onclick="switchPlanTab('overview', this)">Overview</button>
-      <button class="tab-btn" onclick="switchPlanTab('timeline', this)">Timeline</button>
-      <button class="tab-btn" onclick="switchPlanTab('schedule', this)">Day Schedule</button>
-      <button class="tab-btn" onclick="switchPlanTab('vendors', this)">Vendors</button>
-      <button class="tab-btn" onclick="switchPlanTab('ideas-tab', this)">Ideas</button>
+    <div class="tab-nav" id="planTabNav" role="tablist" aria-label="Event Plan Sections">
+      <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="planTabOverview" onclick="switchPlanTab('overview', this)">Overview</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="planTabTimeline" onclick="switchPlanTab('timeline', this)">Timeline</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="planTabSchedule" onclick="switchPlanTab('schedule', this)">Day Schedule</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="planTabVendors" onclick="switchPlanTab('vendors', this)">Vendors</button>
+      <button class="tab-btn" role="tab" aria-selected="false" aria-controls="planTabIdeas-tab" onclick="switchPlanTab('ideas-tab', this)">Ideas</button>
     </div>
 
     <div id="planTabOverview" class="plan-tab">
@@ -441,10 +471,14 @@ function renderPlanOverview(planSections) {
 
 function switchPlanTab(tab, btn) {
   document.querySelectorAll('.plan-tab').forEach(t => t.classList.add('hidden'));
-  document.querySelectorAll('#planTabNav .tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#planTabNav .tab-btn').forEach(b => {
+    b.classList.remove('active');
+    b.setAttribute('aria-selected', 'false');
+  });
   const el = document.getElementById(`planTab${capitalize(tab)}`);
   if (el) el.classList.remove('hidden');
   btn.classList.add('active');
+  btn.setAttribute('aria-selected', 'true');
 }
 
 function renderTimelineSection(timeline) {
@@ -742,18 +776,19 @@ function renderBudgetPage(budgetData) {
       const color = COLORS[i % COLORS.length];
       return `
         <div class="budget-item" data-id="${item.id}">
-          <div class="budget-color" style="background:${color}"></div>
+          <div class="budget-color" style="background:${color}" aria-hidden="true"></div>
           <div class="budget-category">
             <div style="font-weight:700;font-size:.9rem">${escHtml(item.category)}</div>
             ${item.description ? `<div style="font-size:.75rem;color:var(--text-muted)">${escHtml(item.description)}</div>` : ''}
             ${!item.is_confirmed ? `<div style="font-size:.72rem;color:var(--warning)">Estimated — not confirmed</div>` : ''}
           </div>
           <input type="number" class="budget-amount-input" value="${item.amount}" 
+            aria-label="Allocated amount for ${escHtml(item.category)}"
             onchange="onBudgetItemChange(${item.id}, this.value)"
             onblur="saveBudgetChanges()"
             min="0" step="100">
           <div class="budget-pct">${item.percentage?.toFixed(1) || 0}%</div>
-          <button class="btn btn-icon btn-danger btn-sm" onclick="deleteBudgetItem(${item.id})" title="Remove">
+          <button class="btn btn-icon btn-danger btn-sm" onclick="deleteBudgetItem(${item.id})" aria-label="Remove ${escHtml(item.category)} budget item" title="Remove">
             ${icon('trash')}
           </button>
         </div>`;
@@ -767,7 +802,7 @@ function renderBudgetPage(budgetData) {
 }
 
 function onBudgetItemChange(itemId, value) {
-  budgetItemEdits[itemId] = parseFloat(value) || 0;
+  budgetItemEdits[itemId] = Math.max(0, parseFloat(value) || 0);
 }
 
 async function saveBudgetChanges() {
@@ -778,23 +813,38 @@ async function saveBudgetChanges() {
       method: 'PUT', body: { items },
     });
     budgetItemEdits = {};
+    showToast('Budget updated successfully');
     renderBudgetPage(data.data);
   } catch (e) {
     showToast('Failed to save budget: ' + e.message, 'error');
   }
 }
 
+async function addNewBudgetItemRow() {
+  const category = prompt('Enter budget category name (e.g. Photography, Catering, DJ & Music):');
+  if (!category || !category.trim()) return;
+  const amountStr = prompt('Enter estimated amount (₹ INR):', '10000');
+  const amount = Math.max(0, parseFloat(amountStr) || 0);
+  try {
+    const data = await apiFetch(`/events/${state.currentEvent.id}/budget`, {
+      method: 'PUT',
+      body: { items: [{ category: category.trim(), amount: amount, estimated_amount: amount }] },
+    });
+    showToast('Category added to budget');
+    renderBudgetPage(data.data);
+  } catch (e) {
+    showToast('Failed to add category: ' + e.message, 'error');
+  }
+}
+
 async function deleteBudgetItem(itemId) {
   if (!confirm('Remove this budget item?')) return;
   try {
-    // Mark as deleted by setting amount to 0 and removing — we need a delete endpoint
-    // Using the budget update route to set amount=0 would work, but ideally we'd delete
-    // For simplicity, use PUT to amount=0 and refetch
-    await apiFetch(`/events/${state.currentEvent.id}/budget`, {
-      method: 'PUT',
-      body: { items: [{ id: itemId, amount: 0, category: '(removed)' }] },
+    const data = await apiFetch(`/events/${state.currentEvent.id}/budget/${itemId}`, {
+      method: 'DELETE',
     });
-    loadBudgetPage();
+    showToast('Budget item removed');
+    renderBudgetPage(data.data);
   } catch (e) {
     showToast('Failed to remove item: ' + e.message, 'error');
   }
@@ -876,25 +926,25 @@ function renderTasksList(tasks, showEmpty = false) {
 function taskItemHTML(task) {
   const isCompleted = task.status === 'completed';
   return `
-    <div class="task-item ${isCompleted ? 'completed' : ''}" id="task-${task.id}">
-      <div class="task-checkbox ${isCompleted ? 'checked' : ''}" onclick="toggleTask(${task.id}, '${task.status}')"></div>
+    <div class="task-item ${isCompleted ? 'completed' : ''}" id="task-${task.id}" role="listitem">
+      <button class="task-checkbox ${isCompleted ? 'checked' : ''}" role="checkbox" aria-checked="${isCompleted}" aria-label="Mark task ${escHtml(task.title)} as ${isCompleted ? 'incomplete' : 'complete'}" onclick="toggleTask(${task.id}, '${task.status}')"></button>
       <div class="task-info">
         <div class="task-title">${escHtml(task.title)}</div>
         <div class="task-meta">
-          <div class="priority-dot ${task.priority}"></div>
+          <div class="priority-dot ${task.priority}" aria-hidden="true"></div>
           <span>${task.priority}</span>
-          ${task.category ? `<span>• ${task.category}</span>` : ''}
+          ${task.category ? `<span>• ${escHtml(task.category)}</span>` : ''}
           ${task.due_date ? `<span>• Due: ${formatDate(task.due_date)}</span>` : ''}
-          ${task.relative_deadline ? `<span>• ${task.relative_deadline}</span>` : ''}
-          ${task.is_overdue ? `<span class="overdue-badge">⚠️ Overdue</span>` : ''}
+          ${task.relative_deadline ? `<span>• ${escHtml(task.relative_deadline)}</span>` : ''}
+          ${task.is_overdue ? `<span class="overdue-badge" role="status">⚠️ Overdue</span>` : ''}
         </div>
         ${task.description ? `<div style="font-size:.8rem;color:var(--text-muted);margin-top:4px">${escHtml(task.description)}</div>` : ''}
       </div>
       <div class="task-actions">
-        <button class="btn btn-icon btn-secondary btn-sm" onclick="openEditTaskModal(${task.id})" title="Edit">
+        <button class="btn btn-icon btn-secondary btn-sm" onclick="openEditTaskModal(${task.id})" aria-label="Edit task ${escHtml(task.title)}" title="Edit">
           ${icon('edit')}
         </button>
-        <button class="btn btn-icon btn-danger btn-sm" onclick="deleteTask(${task.id})" title="Delete">
+        <button class="btn btn-icon btn-danger btn-sm" onclick="deleteTask(${task.id})" aria-label="Delete task ${escHtml(task.title)}" title="Delete">
           ${icon('trash')}
         </button>
       </div>
@@ -1085,15 +1135,48 @@ async function sendChatMessage() {
   }
 }
 
-// ── Modal Helpers ────────────────────────────────────────────────────────────
+// ── Modal Helpers (Accessible Focus Management) ─────────────────────────────
+let lastFocusedElement = null;
+
 function openModal(id) {
-  document.getElementById(id).classList.add('open');
+  lastFocusedElement = document.activeElement;
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modal.classList.add('open');
   document.body.style.overflow = 'hidden';
+
+  // Set focus to first input or interactive element inside modal
+  setTimeout(() => {
+    const focusable = modal.querySelectorAll('button, input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (focusable.length > 0) {
+      focusable[0].focus();
+    }
+  }, 50);
 }
+
 function closeModal(id) {
-  document.getElementById(id).classList.remove('open');
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modal.classList.remove('open');
   document.body.style.overflow = '';
+  if (lastFocusedElement && typeof lastFocusedElement.focus === 'function') {
+    lastFocusedElement.focus();
+  }
 }
+
+// Global Escape key listener to dismiss open modals
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const openModals = document.querySelectorAll('.modal-overlay.open');
+    if (openModals.length > 0) {
+      openModals.forEach(m => m.classList.remove('open'));
+      document.body.style.overflow = '';
+      if (lastFocusedElement && typeof lastFocusedElement.focus === 'function') {
+        lastFocusedElement.focus();
+      }
+    }
+  }
+});
 
 // ── Formatting Helpers ───────────────────────────────────────────────────────
 function formatCurrency(amount) {
@@ -1138,8 +1221,16 @@ function eventTypeColor(type) {
 }
 
 function escHtml(str) {
-  if (!str) return '';
-  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  if (str === null || str === undefined) return '';
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#x27;',
+    '/': '&#x2F;',
+  };
+  return String(str).replace(/[&<>"'/]/g, s => map[s]);
 }
 
 function setEl(id, value) {

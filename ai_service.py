@@ -2,10 +2,11 @@
 EventGenie AI - Gemini AI Service
 All AI requests are handled server-side here. The API key is never exposed to the frontend.
 """
+import re
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -141,10 +142,11 @@ def _get_client():
 
 
 def _get_model_name() -> str:
+    """Return model name from environment or standard default."""
     return os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 
 
-def generate_event_plan(event: dict) -> dict[str, Any]:
+def generate_event_plan(event: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generate a full structured event plan using Gemini AI.
     Returns parsed dict. Raises on failure.
@@ -173,10 +175,12 @@ def generate_event_plan(event: dict) -> dict[str, Any]:
         )
         raw_text = response.text.strip()
 
-        # Strip markdown code fences if present
-        if raw_text.startswith('```'):
-            lines = raw_text.split('\n')
-            raw_text = '\n'.join(lines[1:-1]) if lines[-1] == '```' else '\n'.join(lines[1:])
+        # Robustly strip markdown code fences
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_text)
+        if match:
+            raw_text = match.group(1).strip()
+        else:
+            raw_text = re.sub(r'^```[a-zA-Z]*\n?', '', raw_text).rstrip('`').strip()
 
         parsed = json.loads(raw_text)
         _validate_plan(parsed)
@@ -198,7 +202,7 @@ def generate_event_plan(event: dict) -> dict[str, Any]:
             raise RuntimeError(f"AI service error: {error_msg}")
 
 
-def chat_with_assistant(event: dict, conversation_history: list, user_message: str) -> str:
+def chat_with_assistant(event: Dict[str, Any], conversation_history: List[Dict[str, Any]], user_message: str) -> str:
     """
     Send a message to the AI assistant with full conversation context.
     Returns the assistant's text response.
@@ -220,8 +224,8 @@ def chat_with_assistant(event: dict, conversation_history: list, user_message: s
     # Build conversation string
     history_text = ""
     for msg in conversation_history[-10:]:  # Keep last 10 messages for context
-        role = "User" if msg['role'] == 'user' else "EventGenie"
-        history_text += f"\n{role}: {msg['content']}"
+        role = "User" if msg.get('role') == 'user' else "EventGenie"
+        history_text += f"\n{role}: {msg.get('content', '')}"
 
     full_prompt = (
         f"{SYSTEM_PROMPT}\n\n{context}"
@@ -248,7 +252,7 @@ def chat_with_assistant(event: dict, conversation_history: list, user_message: s
             raise RuntimeError(f"AI service error: {error_msg}")
 
 
-def _validate_plan(plan: dict) -> None:
+def _validate_plan(plan: Dict[str, Any]) -> None:
     """Basic validation of the AI-generated plan structure."""
     required_keys = ['overview', 'preparation_timeline', 'budget_breakdown']
     for key in required_keys:

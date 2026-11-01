@@ -2,9 +2,8 @@
 EventGenie AI - Automated Tests
 Run with: python -m pytest tests/ -v
 """
-import json
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from app import create_app
 from config import TestingConfig
@@ -88,7 +87,10 @@ def test_create_event_invalid_type(client):
 
 
 def test_create_event_negative_budget(client):
-    resp = client.post('/api/events', json={'name': 'Test', 'event_type': 'birthday', 'budget': -100})
+    resp = client.post(
+        '/api/events',
+        json={'name': 'Test', 'event_type': 'birthday', 'budget': -100}
+    )
     assert resp.status_code == 400
 
 
@@ -124,7 +126,10 @@ def test_get_event_not_found(client):
 def test_update_event(client):
     create = client.post('/api/events', json={'name': 'My Event', 'event_type': 'custom'})
     event_id = create.get_json()['data']['id']
-    resp = client.put(f'/api/events/{event_id}', json={'name': 'Updated Event', 'location': 'Delhi'})
+    resp = client.put(
+        f'/api/events/{event_id}',
+        json={'name': 'Updated Event', 'location': 'Delhi'}
+    )
     assert resp.status_code == 200
     data = resp.get_json()['data']
     assert data['name'] == 'Updated Event'
@@ -144,7 +149,10 @@ def test_delete_event(client):
 # ─── Budget ───────────────────────────────────────────────────────────────────
 
 def test_get_budget_empty(client):
-    create = client.post('/api/events', json={'name': 'Budget Test', 'event_type': 'birthday', 'budget': 100000})
+    create = client.post(
+        '/api/events',
+        json={'name': 'Budget Test', 'event_type': 'birthday', 'budget': 100000}
+    )
     event_id = create.get_json()['data']['id']
     resp = client.get(f'/api/events/{event_id}/budget')
     assert resp.status_code == 200
@@ -233,15 +241,33 @@ MOCK_PLAN = {
             'phase': '3 Months Before',
             'weeks_before': 12,
             'tasks': [
-                {'title': 'Book venue', 'description': 'Shortlist and book venues', 'priority': 'high', 'category': 'venue'},
+                {
+                    'title': 'Book venue',
+                    'description': 'Shortlist and book venues',
+                    'priority': 'high',
+                    'category': 'venue'
+                },
             ],
         }
     ],
     'event_day_schedule': [
-        {'time': '10:00 AM', 'activity': 'Guest arrival', 'duration_minutes': 60, 'notes': '', 'responsible': 'Host'},
+        {
+            'time': '10:00 AM',
+            'activity': 'Guest arrival',
+            'duration_minutes': 60,
+            'notes': '',
+            'responsible': 'Host'
+        },
     ],
     'vendor_checklist': [
-        {'category': 'Catering', 'tasks': [{'title': 'Finalize menu', 'description': 'Select dishes', 'priority': 'high'}]},
+        {
+            'category': 'Catering',
+            'tasks': [{
+                'title': 'Finalize menu',
+                'description': 'Select dishes',
+                'priority': 'high'
+            }]
+        },
     ],
     'ideas': {
         'themes': ['Royal Blue', 'Floral Garden'],
@@ -252,10 +278,38 @@ MOCK_PLAN = {
         'budget_saving_tips': ['Book early'],
     },
     'budget_breakdown': [
-        {'category': 'Venue', 'description': 'Banquet hall', 'estimated_amount': 150000, 'percentage': 30.0, 'notes': '', 'priority': 'essential'},
-        {'category': 'Catering', 'description': 'Food & drinks', 'estimated_amount': 200000, 'percentage': 40.0, 'notes': '', 'priority': 'essential'},
-        {'category': 'Decoration', 'description': 'Flowers & lights', 'estimated_amount': 100000, 'percentage': 20.0, 'notes': '', 'priority': 'important'},
-        {'category': 'Miscellaneous', 'description': 'Other expenses', 'estimated_amount': 50000, 'percentage': 10.0, 'notes': '', 'priority': 'optional'},
+        {
+            'category': 'Venue',
+            'description': 'Banquet hall',
+            'estimated_amount': 150000,
+            'percentage': 30.0,
+            'notes': '',
+            'priority': 'essential'
+        },
+        {
+            'category': 'Catering',
+            'description': 'Food & drinks',
+            'estimated_amount': 200000,
+            'percentage': 40.0,
+            'notes': '',
+            'priority': 'essential'
+        },
+        {
+            'category': 'Decoration',
+            'description': 'Flowers & lights',
+            'estimated_amount': 100000,
+            'percentage': 20.0,
+            'notes': '',
+            'priority': 'important'
+        },
+        {
+            'category': 'Miscellaneous',
+            'description': 'Other expenses',
+            'estimated_amount': 50000,
+            'percentage': 10.0,
+            'notes': '',
+            'priority': 'optional'
+        },
     ],
 }
 
@@ -317,8 +371,12 @@ def test_chat_mocked(client):
     create = client.post('/api/events', json={'name': 'Party', 'event_type': 'birthday'})
     event_id = create.get_json()['data']['id']
 
-    with patch('routes.events.ai_service.chat_with_assistant', return_value='Here are some great ideas!'):
-        resp = client.post(f'/api/events/{event_id}/chat', json={'message': 'Give me theme ideas'})
+    with patch('routes.events.ai_service.chat_with_assistant',
+               return_value='Here are some great ideas!'):
+        resp = client.post(
+            f'/api/events/{event_id}/chat',
+            json={'message': 'Give me theme ideas'}
+        )
         assert resp.status_code == 200
         data = resp.get_json()['data']
         assert 'message' in data
@@ -368,7 +426,10 @@ def test_input_sanitization_xss(client):
 
 def test_export_event_plan(client):
     """Verify the /export endpoint returns complete structured JSON."""
-    create = client.post('/api/events', json={'name': 'Exportable Gala', 'event_type': 'community', 'budget': 100000})
+    create = client.post(
+        '/api/events',
+        json={'name': 'Exportable Gala', 'event_type': 'community', 'budget': 100000}
+    )
     event_id = create.get_json()['data']['id']
 
     # Add a task
@@ -388,11 +449,17 @@ def test_export_event_plan(client):
 
 def test_delete_single_budget_item(client):
     """Verify deleting a specific budget line item."""
-    create = client.post('/api/events', json={'name': 'Budget Event', 'event_type': 'birthday', 'budget': 50000})
+    create = client.post(
+        '/api/events',
+        json={'name': 'Budget Event', 'event_type': 'birthday', 'budget': 50000}
+    )
     event_id = create.get_json()['data']['id']
 
     # Add item
-    update = client.put(f'/api/events/{event_id}/budget', json={'items': [{'category': 'Cake', 'amount': 3000}]})
+    update = client.put(
+        f'/api/events/{event_id}/budget',
+        json={'items': [{'category': 'Cake', 'amount': 3000}]}
+    )
     assert update.status_code == 200
     item_id = update.get_json()['data']['items'][0]['id']
 
@@ -433,12 +500,18 @@ def test_task_overdue_computation(client):
 
 def test_cascade_delete_event(client):
     """Verify deleting an event deletes associated tasks and budget items."""
-    create = client.post('/api/events', json={'name': 'Cascade Event', 'event_type': 'college', 'budget': 20000})
+    create = client.post(
+        '/api/events',
+        json={'name': 'Cascade Event', 'event_type': 'college', 'budget': 20000}
+    )
     event_id = create.get_json()['data']['id']
 
     # Add task & budget
     client.post(f'/api/events/{event_id}/tasks', json={'title': 'Poster design'})
-    client.put(f'/api/events/{event_id}/budget', json={'items': [{'category': 'Print', 'amount': 2000}]})
+    client.put(
+        f'/api/events/{event_id}/budget',
+        json={'items': [{'category': 'Print', 'amount': 2000}]}
+    )
 
     # Delete event
     del_resp = client.delete(f'/api/events/{event_id}')
@@ -448,4 +521,3 @@ def test_cascade_delete_event(client):
     assert client.get(f'/api/events/{event_id}').status_code == 404
     assert client.get(f'/api/events/{event_id}/tasks').status_code == 404
     assert client.get(f'/api/events/{event_id}/budget').status_code == 404
-

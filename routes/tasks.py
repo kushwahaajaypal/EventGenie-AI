@@ -4,7 +4,7 @@ Modern SQLAlchemy 2.0 implementation with input sanitization and strict validati
 """
 import re
 import logging
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple
 
 from flask import Blueprint, jsonify, request, Response
@@ -14,6 +14,9 @@ from models import Task
 
 logger = logging.getLogger(__name__)
 tasks_bp = Blueprint('tasks', __name__, url_prefix='/api/tasks')
+
+VALID_TASK_STATUSES = {'pending', 'in_progress', 'completed', 'cancelled'}
+VALID_TASK_PRIORITIES = {'low', 'medium', 'high', 'urgent'}
 
 
 def _sanitize_text(val: Optional[str], max_len: int = 1000) -> Optional[str]:
@@ -29,16 +32,66 @@ def _sanitize_text(val: Optional[str], max_len: int = 1000) -> Optional[str]:
 
 
 def _json_error(message: str, status: int = 400) -> Tuple[Response, int]:
+    """Return JSON error response."""
     return jsonify({'success': False, 'error': message}), status
 
 
-def _json_ok(data: Any = None, message: Optional[str] = None, status: int = 200) -> Tuple[Response, int]:
+def _json_ok(
+    data: Any = None, message: Optional[str] = None, status: int = 200
+) -> Tuple[Response, int]:
+    """Return JSON success response."""
     resp: Dict[str, Any] = {'success': True}
     if data is not None:
         resp['data'] = data
     if message:
         resp['message'] = message
     return jsonify(resp), status
+
+
+def _parse_task_due_date(due_date_str: Optional[str]):
+    """Parse task due date across multiple accepted formats."""
+    if not due_date_str:
+        return None
+    clean_str = str(due_date_str).strip()
+    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y'):
+        try:
+            return datetime.strptime(clean_str, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _update_optional_task_fields(task: Task, body: Dict[str, Any]) -> None:
+    """Update non-critical optional attributes on a Task."""
+    if 'description' in body:
+        task.description = _sanitize_text(body.get('description'), 2000)
+    if 'priority' in body:
+        priority = (body['priority'] or '').lower().strip()
+        if priority in VALID_TASK_PRIORITIES:
+            task.priority = priority
+    if 'category' in body:
+        task.category = _sanitize_text(body.get('category'), 100)
+    if 'due_date' in body:
+        task.due_date = _parse_task_due_date(body.get('due_date'))
+
+
+def _apply_task_updates(task: Task, body: Dict[str, Any]) -> Optional[str]:
+    """Apply validated field updates to a task. Returns error string if invalid."""
+    if 'title' in body:
+        title = _sanitize_text(body['title'], 300)
+        if not title:
+            return 'Task title cannot be empty'
+        task.title = title
+
+    if 'status' in body:
+        status = (body['status'] or '').lower().strip()
+        if status not in VALID_TASK_STATUSES:
+            valid_list = ', '.join(sorted(VALID_TASK_STATUSES))
+            return f"status must be one of: {valid_list}"
+        task.status = status
+
+    _update_optional_task_fields(task, body)
+    return None
 
 
 @tasks_bp.route('/<int:task_id>', methods=['PUT'])
@@ -52,43 +105,9 @@ def update_task(task_id: int):
     if not body:
         return _json_error('Request body must be JSON')
 
-    if 'title' in body:
-        title = _sanitize_text(body['title'], 300)
-        if not title:
-            return _json_error('Task title cannot be empty')
-        task.title = title
-
-    if 'description' in body:
-        task.description = _sanitize_text(body.get('description'), 2000)
-
-    if 'status' in body:
-        valid_statuses = {'pending', 'in_progress', 'completed', 'cancelled'}
-        status = (body['status'] or '').lower().strip()
-        if status not in valid_statuses:
-            return _json_error(f"status must be one of: {', '.join(sorted(valid_statuses))}")
-        task.status = status
-
-    if 'priority' in body:
-        valid_priorities = {'low', 'medium', 'high', 'urgent'}
-        priority = (body['priority'] or '').lower().strip()
-        if priority in valid_priorities:
-            task.priority = priority
-
-    if 'category' in body:
-        task.category = _sanitize_text(body.get('category'), 100)
-
-    if 'due_date' in body:
-        due_date_str = body.get('due_date')
-        if due_date_str:
-            clean_str = str(due_date_str).strip()
-            for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y'):
-                try:
-                    task.due_date = datetime.strptime(clean_str, fmt).date()
-                    break
-                except ValueError:
-                    continue
-        else:
-            task.due_date = None
+    validation_err = _apply_task_updates(task, body)
+    if validation_err:
+        return _json_error(validation_err)
 
     task.updated_at = datetime.now(timezone.utc)
     db.session.commit()

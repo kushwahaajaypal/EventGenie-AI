@@ -3,7 +3,7 @@ EventGenie AI - Database Models
 Optimized with database indexes for high performance and strict type integrity.
 """
 from datetime import datetime, timezone, date
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 from extensions import db
 
 
@@ -13,7 +13,8 @@ class Event(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
-    event_type = db.Column(db.String(100), nullable=False, index=True)  # wedding, birthday, college, community, custom
+    # Event types: wedding, birthday, college, community, custom
+    event_type = db.Column(db.String(100), nullable=False, index=True)
     location = db.Column(db.String(300))
     event_date = db.Column(db.Date, index=True)
     guest_count = db.Column(db.Integer)
@@ -21,22 +22,38 @@ class Event(db.Model):
     theme = db.Column(db.String(200))
     preferences = db.Column(db.Text)
     description = db.Column(db.Text)
-    status = db.Column(db.String(50), default='planning', index=True)  # planning, confirmed, completed, cancelled
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
-    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
-                           onupdate=lambda: datetime.now(timezone.utc))
+    # Statuses: planning, confirmed, completed, cancelled
+    status = db.Column(db.String(50), default='planning', index=True)
+    created_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc), index=True
+    )
+    updated_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
 
     # Relationships with cascading deletes
-    plans = db.relationship('EventPlan', backref='event', lazy=True, cascade='all, delete-orphan')
-    budget_items = db.relationship('BudgetItem', backref='event', lazy=True, cascade='all, delete-orphan')
-    tasks = db.relationship('Task', backref='event', lazy=True, cascade='all, delete-orphan')
-    chat_messages = db.relationship('ChatMessage', backref='event', lazy=True, cascade='all, delete-orphan')
+    plans = db.relationship(
+        'EventPlan', backref='event', lazy=True, cascade='all, delete-orphan'
+    )
+    budget_items = db.relationship(
+        'BudgetItem', backref='event', lazy=True, cascade='all, delete-orphan'
+    )
+    tasks = db.relationship(
+        'Task', backref='event', lazy=True, cascade='all, delete-orphan'
+    )
+    chat_messages = db.relationship(
+        'ChatMessage', backref='event', lazy=True, cascade='all, delete-orphan'
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize event to a JSON-compatible dictionary."""
         total_tasks = len(self.tasks)
         completed_tasks = sum(1 for t in self.tasks if t.status == 'completed')
         total_budget_allocated = sum(b.amount for b in self.budget_items)
+        progress = round(
+            (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0, 1
+        )
 
         return {
             'id': self.id,
@@ -52,7 +69,7 @@ class Event(db.Model):
             'status': self.status,
             'total_tasks': total_tasks,
             'completed_tasks': completed_tasks,
-            'task_progress': round((completed_tasks / total_tasks * 100) if total_tasks > 0 else 0, 1),
+            'task_progress': progress,
             'total_budget_allocated': round(total_budget_allocated, 2),
             'budget_remaining': round((self.budget or 0) - total_budget_allocated, 2),
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -68,12 +85,17 @@ class EventPlan(db.Model):
     __tablename__ = 'event_plans'
 
     id = db.Column(db.Integer, primary_key=True)
-    event_id = db.Column(db.Integer, db.ForeignKey('events.id'), nullable=False, index=True)
-    plan_type = db.Column(db.String(100), nullable=False, index=True)  # overview, timeline, vendor_checklist, ideas, day_schedule
+    event_id = db.Column(
+        db.Integer, db.ForeignKey('events.id'), nullable=False, index=True
+    )
+    # Plan types: overview, timeline, vendor_checklist, ideas, day_schedule
+    plan_type = db.Column(db.String(100), nullable=False, index=True)
     title = db.Column(db.String(300))
     content = db.Column(db.Text, nullable=False)  # JSON string
     version = db.Column(db.Integer, default=1)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc), index=True
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize plan section to dict with parsed JSON content."""
@@ -101,7 +123,9 @@ class BudgetItem(db.Model):
     __tablename__ = 'budget_items'
 
     id = db.Column(db.Integer, primary_key=True)
-    event_id = db.Column(db.Integer, db.ForeignKey('events.id'), nullable=False, index=True)
+    event_id = db.Column(
+        db.Integer, db.ForeignKey('events.id'), nullable=False, index=True
+    )
     category = db.Column(db.String(200), nullable=False, index=True)
     description = db.Column(db.Text)
     estimated_amount = db.Column(db.Float, nullable=False, default=0)
@@ -110,8 +134,10 @@ class BudgetItem(db.Model):
     notes = db.Column(db.Text)
     is_confirmed = db.Column(db.Boolean, default=False)  # estimated vs. quoted
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
-                           onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize budget item to dictionary."""
@@ -138,18 +164,27 @@ class Task(db.Model):
     __tablename__ = 'tasks'
 
     id = db.Column(db.Integer, primary_key=True)
-    event_id = db.Column(db.Integer, db.ForeignKey('events.id'), nullable=False, index=True)
+    event_id = db.Column(
+        db.Integer, db.ForeignKey('events.id'), nullable=False, index=True
+    )
     title = db.Column(db.String(300), nullable=False)
     description = db.Column(db.Text)
-    category = db.Column(db.String(100), index=True)  # preparation, vendor, decoration, logistics, etc.
-    priority = db.Column(db.String(20), default='medium', index=True)  # low, medium, high, urgent
-    status = db.Column(db.String(30), default='pending', index=True)  # pending, in_progress, completed, cancelled
+    # Categories: preparation, vendor, decoration, logistics, etc.
+    category = db.Column(db.String(100), index=True)
+    # Priorities: low, medium, high, urgent
+    priority = db.Column(db.String(20), default='medium', index=True)
+    # Statuses: pending, in_progress, completed, cancelled
+    status = db.Column(db.String(30), default='pending', index=True)
     due_date = db.Column(db.Date, index=True)
     relative_deadline = db.Column(db.String(200))  # e.g. "3 weeks before event"
     is_overdue = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
-    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
-                           onupdate=lambda: datetime.now(timezone.utc))
+    created_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc), index=True
+    )
+    updated_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize task to dictionary with computed overdue status."""
@@ -183,10 +218,14 @@ class ChatMessage(db.Model):
     __tablename__ = 'chat_messages'
 
     id = db.Column(db.Integer, primary_key=True)
-    event_id = db.Column(db.Integer, db.ForeignKey('events.id'), nullable=False, index=True)
+    event_id = db.Column(
+        db.Integer, db.ForeignKey('events.id'), nullable=False, index=True
+    )
     role = db.Column(db.String(20), nullable=False)  # user, assistant
     content = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    created_at = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc), index=True
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize chat message to dictionary."""

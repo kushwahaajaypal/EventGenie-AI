@@ -11,7 +11,8 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are EventGenie AI, a specialized event planning assistant.
-Your sole purpose is to help users plan weddings, birthdays, college events, community celebrations, and custom events.
+Your sole purpose is to help users plan weddings, birthdays, college events,
+community celebrations, and custom events.
 
 IMPORTANT RULES:
 1. Only discuss topics related to event planning. Politely decline unrelated requests.
@@ -32,7 +33,7 @@ You can help with:
 - Answering follow-up questions about any aspect of event planning
 """
 
-EVENT_PLAN_PROMPT = """Generate a comprehensive event plan for the following event. 
+EVENT_PLAN_PROMPT = """Generate a comprehensive event plan for the following event.
 Return ONLY a valid JSON object (no markdown, no extra text) with this exact structure:
 
 {{
@@ -51,7 +52,10 @@ Return ONLY a valid JSON object (no markdown, no extra text) with this exact str
           "title": "Task title",
           "description": "Task description",
           "priority": "high|medium|low",
-          "category": "venue|catering|decoration|vendor|logistics|invitations|clothing|entertainment"
+          "category": (
+            "venue|catering|decoration|vendor|"
+            "logistics|invitations|clothing|entertainment"
+          )
         }}
       ]
     }}
@@ -110,7 +114,8 @@ Event Details:
 - Preferences: {preferences}
 - Additional Details: {description}
 
-Make the plan specific to this event type. Budget allocations must sum to approximately the total budget.
+Make the plan specific to this event type.
+Budget allocations must sum to approximately the total budget.
 Never assign the same percentage split to every event - adapt to event type and context."""
 
 CHAT_PROMPT = """You are helping plan the following event. Answer the user's question helpfully.
@@ -146,6 +151,37 @@ def _get_model_name() -> str:
     return os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 
 
+def _clean_json_markdown(raw_text: str) -> str:
+    """Robustly extract JSON content from raw markdown fences."""
+    raw_text = raw_text.strip()
+    match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_text)
+    if match:
+        return match.group(1).strip()
+    return re.sub(r'^```[a-zA-Z]*\n?', '', raw_text).rstrip('`').strip()
+
+
+def _handle_gemini_error(e: Exception) -> None:
+    """Classify and re-raise Gemini API exceptions with user-friendly messages."""
+    error_msg = str(e)
+    if 'quota' in error_msg.lower() or '429' in error_msg:
+        raise RuntimeError("Gemini API quota exceeded. Please try again later.")
+    if 'timeout' in error_msg.lower():
+        raise RuntimeError("AI request timed out. Please try again.")
+    if 'api_key' in error_msg.lower() or '401' in error_msg or '403' in error_msg:
+        raise ValueError("Invalid or unauthorized Gemini API key.")
+    logger.error(f"Gemini API error: {e}")
+    raise RuntimeError(f"AI service error: {error_msg}")
+
+
+def _format_conversation_history(history: List[Dict[str, Any]]) -> str:
+    """Format recent messages into prompt text."""
+    history_text = ""
+    for msg in history[-10:]:
+        role = "User" if msg.get('role') == 'user' else "EventGenie"
+        history_text += f"\n{role}: {msg.get('content', '')}"
+    return history_text
+
+
 def generate_event_plan(event: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generate a full structured event plan using Gemini AI.
@@ -173,16 +209,8 @@ def generate_event_plan(event: Dict[str, Any]) -> Dict[str, Any]:
             model=model,
             contents=full_prompt,
         )
-        raw_text = response.text.strip()
-
-        # Robustly strip markdown code fences
-        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', raw_text)
-        if match:
-            raw_text = match.group(1).strip()
-        else:
-            raw_text = re.sub(r'^```[a-zA-Z]*\n?', '', raw_text).rstrip('`').strip()
-
-        parsed = json.loads(raw_text)
+        cleaned_json = _clean_json_markdown(response.text)
+        parsed = json.loads(cleaned_json)
         _validate_plan(parsed)
         return parsed
 
@@ -190,19 +218,14 @@ def generate_event_plan(event: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(f"AI returned invalid JSON: {e}")
         raise ValueError(f"AI returned invalid JSON response: {e}")
     except Exception as e:
-        error_msg = str(e)
-        if 'quota' in error_msg.lower() or '429' in error_msg:
-            raise RuntimeError("Gemini API quota exceeded. Please try again later.")
-        elif 'timeout' in error_msg.lower():
-            raise RuntimeError("AI request timed out. Please try again.")
-        elif 'api_key' in error_msg.lower() or '401' in error_msg or '403' in error_msg:
-            raise ValueError("Invalid or unauthorized Gemini API key.")
-        else:
-            logger.error(f"Gemini API error: {e}")
-            raise RuntimeError(f"AI service error: {error_msg}")
+        _handle_gemini_error(e)
 
 
-def chat_with_assistant(event: Dict[str, Any], conversation_history: List[Dict[str, Any]], user_message: str) -> str:
+def chat_with_assistant(
+    event: Dict[str, Any],
+    conversation_history: List[Dict[str, Any]],
+    user_message: str
+) -> str:
     """
     Send a message to the AI assistant with full conversation context.
     Returns the assistant's text response.
@@ -221,12 +244,7 @@ def chat_with_assistant(event: Dict[str, Any], conversation_history: List[Dict[s
         theme=event.get('theme', 'No specific theme'),
     )
 
-    # Build conversation string
-    history_text = ""
-    for msg in conversation_history[-10:]:  # Keep last 10 messages for context
-        role = "User" if msg.get('role') == 'user' else "EventGenie"
-        history_text += f"\n{role}: {msg.get('content', '')}"
-
+    history_text = _format_conversation_history(conversation_history)
     full_prompt = (
         f"{SYSTEM_PROMPT}\n\n{context}"
         + (f"\n\nConversation so far:{history_text}" if history_text else "")
@@ -240,16 +258,7 @@ def chat_with_assistant(event: Dict[str, Any], conversation_history: List[Dict[s
         )
         return response.text.strip()
     except Exception as e:
-        error_msg = str(e)
-        if 'quota' in error_msg.lower() or '429' in error_msg:
-            raise RuntimeError("Gemini API quota exceeded. Please try again later.")
-        elif 'timeout' in error_msg.lower():
-            raise RuntimeError("AI request timed out. Please try again.")
-        elif 'api_key' in error_msg.lower() or '401' in error_msg or '403' in error_msg:
-            raise ValueError("Invalid or unauthorized Gemini API key.")
-        else:
-            logger.error(f"Gemini chat error: {e}")
-            raise RuntimeError(f"AI service error: {error_msg}")
+        _handle_gemini_error(e)
 
 
 def _validate_plan(plan: Dict[str, Any]) -> None:

@@ -12,22 +12,82 @@ from config import get_config
 from extensions import db
 
 
-def create_app(config_override=None):
-    """Application factory pattern."""
-    # Detect serverless/read-only environments (e.g. Vercel, AWS Lambda)
+def _resolve_instance_path() -> str:
+    """Resolve and create application instance path based on runtime environment."""
     is_serverless = bool(
         os.getenv('VERCEL') or
         os.getenv('AWS_LAMBDA_FUNCTION_NAME') or
         os.getenv('LAMBDA_TASK_ROOT')
     )
-    fallback_instance = os.path.abspath(os.path.join(tempfile.gettempdir(), 'instance'))
-    custom_instance_path = os.getenv('INSTANCE_PATH')
-    if not custom_instance_path and is_serverless:
-        custom_instance_path = fallback_instance
+    fallback = os.path.abspath(os.path.join(tempfile.gettempdir(), 'instance'))
+    custom = os.getenv('INSTANCE_PATH')
+    target_path = custom or (fallback if is_serverless else None)
+
+    if target_path:
+        try:
+            os.makedirs(target_path, exist_ok=True)
+            return target_path
+        except OSError:
+            os.makedirs(fallback, exist_ok=True)
+            return fallback
+    return fallback
+
+
+def _normalize_db_uri(raw_uri: str, instance_path: str) -> str:
+    """Normalize SQLite/Postgres connection URIs for standard deployment compatibility."""
+    if raw_uri.startswith('postgres://'):
+        return raw_uri.replace('postgres://', 'postgresql://', 1)
+    if (raw_uri.startswith('sqlite:///') and
+            not raw_uri.startswith('sqlite:////') and
+            ':memory:' not in raw_uri):
+        db_name = raw_uri.replace('sqlite:///', '')
+        full_path = os.path.join(instance_path, db_name).replace('\\', '/')
+        return f"sqlite:///{full_path}"
+    return raw_uri
+
+
+def _apply_security_headers(response: Response, is_secure: bool, path: str) -> Response:
+    """Inject strict OWASP security headers and optimal caching controls."""
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self';"
+    )
+    response.headers['Content-Security-Policy'] = csp
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = (
+        'camera=(), microphone=(), geolocation=(), payment=()'
+    )
+
+    if is_secure:
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+
+    if path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    elif path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+    else:
+        response.headers['Cache-Control'] = 'no-cache, must-revalidate'
+
+    return response
+
+
+def create_app(config_override=None):
+    """Application factory pattern."""
+    resolved_instance = _resolve_instance_path()
 
     app = Flask(
         __name__,
-        instance_path=custom_instance_path,
+        instance_path=resolved_instance,
         static_folder='static',
         template_folder='templates',
     )
@@ -36,24 +96,9 @@ def create_app(config_override=None):
     cfg = config_override or get_config()
     app.config.from_object(cfg)
 
-    # Ensure instance folder exists, falling back to tempdir if filesystem is read-only
-    try:
-        os.makedirs(app.instance_path, exist_ok=True)
-    except OSError:
-        app.instance_path = fallback_instance
-        os.makedirs(app.instance_path, exist_ok=True)
-
-    # Fix SQLite path to use instance folder (skip :memory: and absolute paths)
-    db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
-    if db_uri.startswith('postgres://'):
-        db_uri = db_uri.replace('postgres://', 'postgresql://', 1)
-        app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
-    elif (db_uri.startswith('sqlite:///') and
-            not db_uri.startswith('sqlite:////') and
-            ':memory:' not in db_uri):
-        db_name = db_uri.replace('sqlite:///', '')
-        full_path = os.path.join(app.instance_path, db_name).replace('\\', '/')
-        app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{full_path}"
+    # Normalize DB URI
+    raw_db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+    app.config['SQLALCHEMY_DATABASE_URI'] = _normalize_db_uri(raw_db_uri, app.instance_path)
 
     # Extensions
     db.init_app(app)
@@ -74,43 +119,8 @@ def create_app(config_override=None):
     # Security & Caching Headers (OWASP & A+ Security Score)
     @app.after_request
     def apply_security_headers(response: Response) -> Response:
-        """Inject strict security headers and optimal caching controls."""
-        # Content Security Policy (allows Google Fonts, Chart.js CDN, inline styles for UI accents)
-        csp = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' https://fonts.gstatic.com; "
-            "img-src 'self' data: https:; "
-            "connect-src 'self'; "
-            "frame-ancestors 'none'; "
-            "base-uri 'self';"
-        )
-        response.headers['Content-Security-Policy'] = csp
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options'] = 'DENY'
-        response.headers['X-XSS-Protection'] = '1; mode=block'
-        response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-        response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=(), payment=()'
-
-        # HSTS for HTTPS connections
-        if request.is_secure or request.headers.get('X-Forwarded-Proto', '') == 'https':
-            response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-
-        # Caching: Long-lived caching for static assets, no-cache for dynamic endpoints
-        path = request.path
-        if path.startswith('/static/'):
-            # 1 year cache for static assets with validation
-            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
-        elif path.startswith('/api/'):
-            # Never cache API responses
-            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-            response.headers['Pragma'] = 'no-cache'
-        else:
-            # HTML page revalidation
-            response.headers['Cache-Control'] = 'no-cache, must-revalidate'
-
-        return response
+        is_secure = request.is_secure or request.headers.get('X-Forwarded-Proto', '') == 'https'
+        return _apply_security_headers(response, is_secure, request.path)
 
     # Health check
     @app.route('/api/health')
